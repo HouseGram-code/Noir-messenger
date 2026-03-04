@@ -11,15 +11,19 @@ export interface UserProfile {
   bio: string;
   theme: Theme;
   email?: string;
+  twoFactorAuth?: boolean;
+  showLastSeen?: boolean;
 }
 
 interface AppState {
   userProfile: UserProfile | null;
   activeTab: 'chats' | 'profile';
   theme: Theme;
+  language: 'en' | 'ru';
   setUserProfile: (profile: UserProfile | null) => void;
   setActiveTab: (tab: 'chats' | 'profile') => void;
   setTheme: (theme: Theme) => void;
+  setLanguage: (language: 'en' | 'ru') => void;
 }
 
 export const useAppStore = create<AppState>()(
@@ -28,9 +32,11 @@ export const useAppStore = create<AppState>()(
       userProfile: null,
       activeTab: 'chats',
       theme: 'emerald',
+      language: 'en',
       setUserProfile: (profile) => set({ userProfile: profile }),
       setActiveTab: (tab) => set({ activeTab: tab }),
       setTheme: (theme) => set({ theme }),
+      setLanguage: (language) => set({ language }),
     }),
     {
       name: 'app-storage', // unique name for localStorage

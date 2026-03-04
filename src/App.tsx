@@ -5,7 +5,8 @@
 
 import { useState, useEffect, useRef, FC, ChangeEvent } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { MessageSquare, User, Ghost, Settings, ChevronLeft, Send, Edit2, Save, X, Bot, Phone, Video, Mic, MicOff, VideoOff, PhoneOff, Camera, Info, HelpCircle } from 'lucide-react';
+import { MessageSquare, User, Ghost, Settings, ChevronLeft, Send, Edit2, Save, X, Bot, Phone, Video, Mic, MicOff, VideoOff, PhoneOff, Camera, Info, HelpCircle, Plus, Smile, Paperclip, MoreVertical, CheckCircle } from 'lucide-react';
+import EmojiPicker from 'emoji-picker-react';
 import { auth, db, storage } from './lib/firebase';
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, updateProfile as updateAuthProfile } from 'firebase/auth';
 import { doc, setDoc, getDoc, collection, query, where, getDocs, updateDoc, onSnapshot, addDoc, orderBy, serverTimestamp, Timestamp, limit } from 'firebase/firestore';
@@ -13,6 +14,7 @@ import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import ImageBlobReduce from 'image-blob-reduce';
 import localforage from 'localforage';
 import { useAppStore, UserProfile, Theme } from './lib/store';
+import { useTranslation } from './hooks/useTranslation';
 
 // Types
 // Theme and UserProfile are now imported from store
@@ -20,7 +22,7 @@ import { useAppStore, UserProfile, Theme } from './lib/store';
 type Message = {
   id: string;
   text: string;
-  sender: 'me' | 'other';
+  sender: 'me' | 'other' | 'system';
   timestamp: Date;
 };
 
@@ -31,9 +33,15 @@ type Chat = {
   lastMessage: string;
   unread: number;
   isBot?: boolean;
+  isOfficial?: boolean;
   isOnline?: boolean;
   lastSeen?: Date;
   username: string;
+  isGroup?: boolean;
+  members?: string[];
+  description?: string;
+  owner?: string;
+  inviteLink?: string;
 };
 
 type CallState = {
@@ -441,13 +449,37 @@ const AuthScreen: FC = () => {
   );
 };
 
-const ChatDetailScreen: FC<{ chat: Chat; onBack: () => void; theme: Theme; currentUser: UserProfile }> = ({ chat, onBack, theme, currentUser }) => {
+const ChatDetailScreen: FC<{ chat: Chat; onBack: () => void; theme: Theme; currentUser: UserProfile; db: any }> = ({ chat, onBack, theme, currentUser, db }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [callState, setCallState] = useState<CallState | null>(null);
+  const [showGroupInfo, setShowGroupInfo] = useState(false);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [showFileMenu, setShowFileMenu] = useState(false);
+  const [showLeaveConfirmation, setShowLeaveConfirmation] = useState(false);
+  const [showMenu, setShowMenu] = useState(false);
+  const [activeTab, setActiveTab] = useState<'stickers' | 'emoji' | 'gifs'>('emoji');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [memberProfiles, setMemberProfiles] = useState<Record<string, any>>({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const themeConfig = THEMES[getSafeTheme(theme)];
+
+  useEffect(() => {
+    if (showGroupInfo && chat.isGroup && chat.members) {
+      const fetchMemberProfiles = async () => {
+        const profiles: Record<string, any> = {};
+        for (const memberId of chat.members!) {
+          const userDoc = await getDoc(doc(db, "users", memberId));
+          if (userDoc.exists()) {
+            profiles[memberId] = userDoc.data();
+          }
+        }
+        setMemberProfiles(profiles);
+      };
+      fetchMemberProfiles();
+    }
+  }, [showGroupInfo, chat.isGroup, chat.members, db]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -510,6 +542,40 @@ const ChatDetailScreen: FC<{ chat: Chat; onBack: () => void; theme: Theme; curre
       console.error("Error sending message:", e);
       // Optionally restore input text if failed
     }
+  };
+
+  const handleFileUpload = async (e: ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    const MAX_SIZE = 150 * 1024 * 1024; // 150 MB
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (file.size > MAX_SIZE) {
+        alert(`File ${file.name} is too large. Max size is 150 MB.`);
+        continue;
+      }
+
+      const storageRef = ref(storage, `chats/${chat.id}/${Date.now()}_${file.name}`);
+      const uploadTask = uploadBytesResumable(storageRef, file);
+
+      uploadTask.on('state_changed', 
+        (snapshot) => {},
+        (error) => console.error(error),
+        async () => {
+          const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+          await addDoc(collection(db, "chats", chat.id, "messages"), {
+            text: `File: ${file.name}`,
+            fileUrl: downloadURL,
+            fileType: file.type,
+            senderId: currentUser.uid,
+            timestamp: serverTimestamp()
+          });
+        }
+      );
+    }
+    setShowFileMenu(false);
   };
 
   const startCall = (type: 'voice' | 'video') => {
@@ -593,11 +659,18 @@ const ChatDetailScreen: FC<{ chat: Chat; onBack: () => void; theme: Theme; curre
                <div className={`absolute bottom-0 right-0 w-2.5 h-2.5 ${themeConfig.primary.replace('text-', 'bg-')} rounded-full border-2 border-black`}></div>
             )}
           </div>
-          <div>
-            <h3 className="font-medium text-white">{chat.name}</h3>
+        <div onClick={() => chat.isGroup && setShowGroupInfo(true)} className={chat.isGroup ? "cursor-pointer" : ""}>
+            <h3 className="font-medium text-white flex items-center gap-1">
+              {chat.name}
+              {chat.isOfficial && <CheckCircle className="w-3 h-3 text-white fill-blue-500" />}
+            </h3>
             <p className="text-xs text-zinc-500">
               {isTyping ? (
                 <span className={`${themeConfig.primary} animate-pulse`}>typing...</span>
+              ) : chat.isBot ? (
+                'Official Bot'
+              ) : chat.isGroup ? (
+                `${chat.members?.length || 0} members`
               ) : chat.isOnline ? (
                 <span className={themeConfig.primary}>Online</span>
               ) : (
@@ -608,65 +681,342 @@ const ChatDetailScreen: FC<{ chat: Chat; onBack: () => void; theme: Theme; curre
         </div>
         
         <div className="flex items-center gap-1">
-          <button 
-            onClick={() => startCall('voice')}
-            className="p-2 text-zinc-400 hover:text-white hover:bg-zinc-900 rounded-full transition-colors"
-          >
-            <Phone className="w-5 h-5" />
-          </button>
-          <button 
-            onClick={() => startCall('video')}
-            className="p-2 text-zinc-400 hover:text-white hover:bg-zinc-900 rounded-full transition-colors"
-          >
-            <Video className="w-5 h-5" />
-          </button>
+          {!chat.isGroup && !chat.isBot && (
+            <>
+              <button 
+                onClick={() => startCall('voice')}
+                className="p-2 text-zinc-400 hover:text-white hover:bg-zinc-900 rounded-full transition-colors"
+              >
+                <Phone className="w-5 h-5" />
+              </button>
+              <button 
+                onClick={() => startCall('video')}
+                className="p-2 text-zinc-400 hover:text-white hover:bg-zinc-900 rounded-full transition-colors"
+              >
+                <Video className="w-5 h-5" />
+              </button>
+            </>
+          )}
         </div>
       </div>
 
+      {showGroupInfo && (
+        <div className="fixed inset-0 bg-black/90 flex items-end sm:items-center justify-center z-50 sm:p-6">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-t-3xl sm:rounded-2xl p-6 max-w-sm w-full h-[80vh] sm:h-auto overflow-y-auto">
+            <div className="flex justify-between items-center mb-6">
+              <div className="flex items-center gap-4">
+                <button onClick={() => setShowGroupInfo(false)} className="text-zinc-400 hover:text-white">
+                  <ChevronLeft className="w-6 h-6" />
+                </button>
+                <h3 className="text-xl font-medium text-white">Group Info</h3>
+              </div>
+              <div className="relative">
+                <button onClick={() => setShowMenu(!showMenu)} className="text-zinc-400 hover:text-white">
+                  <MoreVertical className="w-6 h-6" />
+                </button>
+                {showMenu && (
+                  <div className="absolute right-0 top-8 bg-zinc-800 border border-zinc-700 rounded-xl p-2 shadow-xl z-50 w-40">
+                    <button 
+                      onClick={() => {
+                        setShowMenu(false);
+                        setShowLeaveConfirmation(true);
+                      }}
+                      className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-zinc-700 rounded-lg"
+                    >
+                      Leave Group
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+            
+            {showLeaveConfirmation && (
+              <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[60] p-6">
+                <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 max-w-sm w-full">
+                  <h3 className="text-lg font-medium text-white mb-4">Leave Group?</h3>
+                  <p className="text-zinc-400 text-sm mb-6">Are you sure you want to leave this group?</p>
+                  <div className="flex gap-4">
+                    <button onClick={() => setShowLeaveConfirmation(false)} className="flex-1 py-2 bg-zinc-800 text-white rounded-lg">No</button>
+                    <button 
+                      onClick={async () => {
+                        // Logic to remove user from group
+                        await updateDoc(doc(db, "chats", chat.id), {
+                          members: chat.members?.filter(m => m !== currentUser.uid)
+                        });
+                        setShowLeaveConfirmation(false);
+                        setShowGroupInfo(false);
+                      }} 
+                      className="flex-1 py-2 bg-red-600 text-white rounded-lg"
+                    >
+                      Yes
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+            
+            <div className="flex flex-col items-center mb-6">
+              <div className="w-24 h-24 rounded-full bg-zinc-800 flex items-center justify-center mb-4 overflow-hidden border border-zinc-700">
+                {chat.avatar ? (
+                  <img src={chat.avatar} alt={chat.name} className="w-full h-full object-cover" />
+                ) : (
+                  <User className="w-12 h-12 text-zinc-600" />
+                )}
+              </div>
+              <h2 className="text-2xl font-semibold text-white">{chat.name}</h2>
+              <p className="text-zinc-500 text-sm">{chat.members?.length || 0} members</p>
+            </div>
+
+            {chat.description && (
+              <div className="mb-6">
+                <h4 className="text-zinc-400 text-xs uppercase tracking-wider mb-2">Description</h4>
+                <p className="text-white text-sm">{chat.description}</p>
+              </div>
+            )}
+
+            <div className="mb-6 bg-zinc-800 p-4 rounded-xl flex items-center justify-between">
+              <div>
+                <h4 className="text-zinc-400 text-xs uppercase tracking-wider mb-1">Invite Link</h4>
+                <p className="text-emerald-400 text-sm break-all">noir-messenger.vercel.app/join/{chat.id}</p>
+              </div>
+              <button 
+                onClick={() => {
+                  navigator.clipboard.writeText(`https://noir-messenger.vercel.app/join/${chat.id}`);
+                  alert("Link copied to clipboard!");
+                }}
+                className="text-zinc-400 hover:text-white transition-colors"
+              >
+                Copy
+              </button>
+            </div>
+
+            {!chat.members?.includes(currentUser.uid) && (
+              <button 
+                onClick={() => {
+                  // Simulate joining
+                  alert("Joining group...");
+                  setShowGroupInfo(false);
+                }}
+                className="w-full py-3 bg-emerald-600 text-white rounded-xl font-medium hover:bg-emerald-700 transition-colors mb-6"
+              >
+                Join Group
+              </button>
+            )}
+
+            <h4 className="text-zinc-400 text-xs uppercase tracking-wider mb-3">Members</h4>
+            <div className="space-y-4">
+              {chat.members?.map(memberId => {
+                const profile = memberProfiles[memberId];
+                return (
+                  <div key={memberId} className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full bg-zinc-800 flex items-center justify-center overflow-hidden">
+                      {profile?.avatar ? (
+                        <img src={profile.avatar} alt={profile.name} className="w-full h-full object-cover" />
+                      ) : (
+                        <User className="w-5 h-5 text-zinc-600" />
+                      )}
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-white text-sm font-medium">{profile?.name || `User ${memberId.slice(0, 5)}`}</p>
+                      <p className="text-zinc-500 text-xs">{memberId === chat.owner ? "Owner" : "Member"}</p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-6">
-        {messages.map((msg) => (
-          <div 
-            key={msg.id} 
-            className={`flex flex-col ${msg.sender === 'me' ? 'items-end' : 'items-start'}`}
-          >
+        {chat.isBot ? (
+             <div className="flex flex-col items-start">
+                <div className="max-w-[85%] bg-zinc-900 text-zinc-200 border border-zinc-800 rounded-2xl rounded-tl-sm px-4 py-3 text-sm relative group">
+                  <h3 className="font-bold text-white mb-2 text-base">Noir Messenger 1.1 Update</h3>
+                  <p className="mb-2">We are excited to announce the release of version 1.1! Here's what's new:</p>
+                  <ul className="list-disc list-inside space-y-1 text-zinc-300 mb-3">
+                    <li>Official News Bot integration</li>
+                    <li>Enhanced Security Settings (Password Change)</li>
+                    <li>Language Support (English/Russian)</li>
+                    <li>UI/UX Improvements</li>
+                  </ul>
+                  <p className="text-zinc-400 text-xs">Thank you for using Noir Messenger.</p>
+                </div>
+                <span className="text-[10px] text-zinc-600 mt-1 px-1">
+                  {formatTime(new Date())}
+                </span>
+             </div>
+        ) : (
+          messages.map((msg) => (
             <div 
-              className={`max-w-[80%] px-4 py-2 rounded-2xl text-sm relative group ${
-                msg.sender === 'me' 
-                  ? 'bg-white text-black rounded-tr-sm' 
-                  : 'bg-zinc-900 text-zinc-200 border border-zinc-800 rounded-tl-sm'
-              }`}
+              key={msg.id} 
+              className={`flex flex-col ${msg.sender === 'me' ? 'items-end' : msg.sender === 'system' ? 'items-center' : 'items-start'}`}
             >
-              {msg.text}
+              {msg.sender === 'system' ? (
+                <div className="bg-zinc-800/50 text-zinc-400 text-xs px-3 py-1 rounded-full">
+                  {msg.text}
+                </div>
+              ) : (
+                <>
+                  <div 
+                    className={`max-w-[80%] px-4 py-2 rounded-2xl text-sm relative group ${
+                      msg.sender === 'me' 
+                        ? 'bg-white text-black rounded-tr-sm' 
+                        : 'bg-zinc-900 text-zinc-200 border border-zinc-800 rounded-tl-sm'
+                    }`}
+                  >
+                    {msg.text}
+                  </div>
+                  <span className="text-[10px] text-zinc-600 mt-1 px-1">
+                    {formatTime(msg.timestamp)}
+                  </span>
+                </>
+              )}
             </div>
-            <span className="text-[10px] text-zinc-600 mt-1 px-1">
-              {formatTime(msg.timestamp)}
-            </span>
-          </div>
-        ))}
+          ))
+        )}
         <div ref={messagesEndRef} />
       </div>
 
       {/* Input Area */}
-      <div className="p-4 border-t border-zinc-900/50 bg-black/80 backdrop-blur-lg">
-        <div className={`flex items-center gap-2 bg-zinc-900/50 border border-zinc-800 rounded-full px-4 py-2 ${themeConfig.border} transition-colors`}>
-          <input 
-            type="text" 
-            value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-            placeholder="Type a message..."
-            className="flex-1 bg-transparent border-none outline-none text-white placeholder:text-zinc-600 text-sm"
-          />
-          <button 
-            onClick={handleSend}
-            disabled={!inputText.trim()}
-            className="p-2 bg-white rounded-full text-black disabled:opacity-50 disabled:cursor-not-allowed hover:bg-zinc-200 transition-colors"
-          >
-            <Send className="w-4 h-4" />
-          </button>
+      {chat.isBot ? (
+        <div className="p-4 border-t border-zinc-900/50 bg-black/80 backdrop-blur-lg text-center text-zinc-500 text-sm">
+          This bot is read-only.
         </div>
-      </div>
+      ) : (
+        <div className="p-4 border-t border-zinc-900/50 bg-black/80 backdrop-blur-lg relative">
+          {showEmojiPicker && (
+            <div className="absolute bottom-20 left-4 z-50 bg-zinc-900 border border-zinc-800 rounded-3xl overflow-hidden shadow-2xl">
+              <div className="flex border-b border-zinc-800">
+                <button 
+                  onClick={() => setActiveTab('stickers')}
+                  className={`flex-1 py-3 text-xs font-medium uppercase tracking-wider ${activeTab === 'stickers' ? 'text-white border-b-2 border-emerald-500' : 'text-zinc-500'}`}
+                >
+                  Stickers
+                </button>
+                <button 
+                  onClick={() => setActiveTab('emoji')}
+                  className={`flex-1 py-3 text-xs font-medium uppercase tracking-wider ${activeTab === 'emoji' ? 'text-white border-b-2 border-emerald-500' : 'text-zinc-500'}`}
+                >
+                  Emoji
+                </button>
+                <button 
+                  onClick={() => setActiveTab('gifs')}
+                  className={`flex-1 py-3 text-xs font-medium uppercase tracking-wider ${activeTab === 'gifs' ? 'text-white border-b-2 border-emerald-500' : 'text-zinc-500'}`}
+                >
+                  GIFs
+                </button>
+              </div>
+              
+              <div className="h-[300px] overflow-y-auto">
+                {activeTab === 'emoji' && (
+                  <EmojiPicker 
+                    onEmojiClick={(emojiData) => {
+                      setInputText(prev => prev + emojiData.emoji);
+                    }}
+                    theme={'dark' as any}
+                    emojiStyle={'apple' as any}
+                    searchDisabled={true}
+                    skinTonesDisabled={true}
+                    width={300}
+                    height={300}
+                  />
+                )}
+                {activeTab === 'stickers' && (
+                  <div className="p-2 space-y-4">
+                    <div className="flex items-center justify-between bg-zinc-800/50 p-3 rounded-xl">
+                      <div className="flex items-center gap-3">
+                        <img src="https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExNHJqZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4JmVwPXYxX2ludGVybmFsX2dpZl9ieV9pZCZjdD1n/3o7TKMGpxxHOGTdzJC/giphy.gif" alt="Animated Sticker" className="w-12 h-12 rounded-lg object-cover" />
+                        <div>
+                          <p className="text-white text-sm font-medium">Animated Bunny</p>
+                          <p className="text-zinc-500 text-xs">20 stickers</p>
+                        </div>
+                      </div>
+                      <button className="text-emerald-500 text-xs font-medium bg-emerald-500/10 px-3 py-1 rounded-full">Added</button>
+                    </div>
+                  </div>
+                )}
+                {activeTab === 'gifs' && (
+                  <div className="p-2">
+                    <input type="text" placeholder="Search GIFs..." className="w-full bg-zinc-800 text-white text-sm rounded-full px-4 py-2 mb-4 outline-none" />
+                    <div className="grid grid-cols-2 gap-2">
+                      {[
+                        'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExNHJqZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4JmVwPXYxX2ludGVybmFsX2dpZl9ieV9pZCZjdD1n/l41lTjJp8WhY4GAKs/giphy.gif',
+                        'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExNHJqZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4JmVwPXYxX2ludGVybmFsX2dpZl9ieV9pZCZjdD1n/3o7TKVUn7iM8FMEU24/giphy.gif',
+                        'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExNHJqZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4JmVwPXYxX2ludGVybmFsX2dpZl9ieV9pZCZjdD1n/xT9IgzoKnwH49F7X3y/giphy.gif',
+                        'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExNHJqZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4JmVwPXYxX2ludGVybmFsX2dpZl9ieV9pZCZjdD1n/3o7TKMGpxxHOGTdzJC/giphy.gif',
+                        'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExNHJqZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4ZzR4JmVwPXYxX2ludGVybmFsX2dpZl9ieV9pZCZjdD1n/l41lTjJp8WhY4GAKs/giphy.gif'
+                      ].map((url, i) => (
+                        <img key={i} src={url} alt="GIF" className="w-full h-24 object-cover rounded-lg" />
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          <div className={`flex items-center gap-2 bg-zinc-900/50 border border-zinc-800 rounded-full px-4 py-2 ${themeConfig.border} transition-colors`}>
+            <button 
+              onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+              className="text-zinc-400 hover:text-white transition-colors"
+            >
+              <Smile className="w-5 h-5" />
+            </button>
+            <button 
+              onClick={() => setShowFileMenu(!showFileMenu)}
+              className="text-zinc-400 hover:text-white transition-colors"
+            >
+              <Paperclip className="w-5 h-5" />
+            </button>
+            {showFileMenu && (
+              <div className="absolute bottom-20 left-12 z-50 bg-zinc-900 border border-zinc-800 rounded-2xl p-2 shadow-2xl flex flex-col gap-1">
+                {[
+                  { label: 'Photo', accept: 'image/*' },
+                  { label: 'Video', accept: 'video/*' },
+                  { label: 'Music', accept: 'audio/*' },
+                  { label: 'File', accept: '*' }
+                ].map((item) => (
+                  <button 
+                    key={item.label}
+                    onClick={() => {
+                      if (fileInputRef.current) {
+                        fileInputRef.current.accept = item.accept;
+                        fileInputRef.current.click();
+                      }
+                    }}
+                    className="px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800 rounded-lg text-left"
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            )}
+            <input 
+              type="file" 
+              ref={fileInputRef}
+              onChange={handleFileUpload}
+              className="hidden"
+              multiple
+            />
+            <input 
+              type="text" 
+              value={inputText}
+              onChange={(e) => setInputText(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+              placeholder="Type a message..."
+              className="flex-1 bg-transparent border-none outline-none text-white placeholder:text-zinc-600 text-sm"
+            />
+            <button 
+              onClick={handleSend}
+              disabled={!inputText.trim()}
+              className="p-2 bg-white rounded-full text-black disabled:opacity-50 disabled:cursor-not-allowed hover:bg-zinc-200 transition-colors"
+            >
+              <Send className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
     </motion.div>
   );
 };
@@ -675,9 +1025,13 @@ const ChatsScreen: FC<{
   chats: Chat[]; 
   onChatSelect: (chat: Chat) => void; 
   onAddChat: (username: string) => void;
+  onCreateGroup: (name: string, description: string, avatar: string | null) => void;
   theme: Theme; 
-}> = ({ chats, onChatSelect, onAddChat, theme }) => {
+}> = ({ chats, onChatSelect, onAddChat, onCreateGroup, theme }) => {
   const [searchQuery, setSearchQuery] = useState('');
+  const [showCreateGroup, setShowCreateGroup] = useState(false);
+  const [groupName, setGroupName] = useState('');
+  const [groupDescription, setGroupDescription] = useState('');
   const themeConfig = THEMES[getSafeTheme(theme)];
   
   const filteredChats = chats.filter(chat => 
@@ -695,9 +1049,42 @@ const ChatsScreen: FC<{
       transition={{ duration: 0.3 }}
       className="h-full overflow-y-auto p-4"
     >
-      <h2 className="text-2xl font-light tracking-tight text-white mb-4 px-2">Messages</h2>
+      <div className="flex justify-between items-center mb-4 px-2">
+        <h2 className="text-2xl font-light tracking-tight text-white">Messages</h2>
+        <button 
+          onClick={() => setShowCreateGroup(true)}
+          className="p-2 bg-zinc-900 rounded-full hover:bg-zinc-800 transition-colors text-zinc-400 hover:text-white"
+          title="Create Group"
+        >
+          <Plus className="w-5 h-5" />
+        </button>
+      </div>
       
-      {/* Search Bar */}
+      {showCreateGroup && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-6">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-8 max-w-sm w-full">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-xl font-medium text-white">Create Group</h3>
+              <button onClick={() => setShowCreateGroup(false)} className="text-zinc-400 hover:text-white">
+                <ChevronLeft className="w-6 h-6" />
+              </button>
+            </div>
+            <input type="text" value={groupName} onChange={(e) => setGroupName(e.target.value)} placeholder="Group Name" className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-white mb-4" />
+            <input type="text" value={groupDescription} onChange={(e) => setGroupDescription(e.target.value)} placeholder="Description (optional)" className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-white mb-4" />
+            <button 
+              onClick={() => {
+                onCreateGroup(groupName, groupDescription, null);
+                setShowCreateGroup(false);
+                setGroupName('');
+                setGroupDescription('');
+              }}
+              className="w-full py-3 bg-white text-black rounded-xl font-medium hover:bg-zinc-200 transition-colors"
+            >
+              Create
+            </button>
+          </div>
+        </div>
+      )}
       <div className="mb-6 px-2">
         <div className="relative">
           <input
@@ -741,7 +1128,10 @@ const ChatsScreen: FC<{
               </div>
               <div className="flex-1 text-left">
                 <div className="flex justify-between items-baseline mb-1">
-                  <h3 className={`font-medium text-white group-hover:${themeConfig.primary} transition-colors`}>{chat.name}</h3>
+                  <h3 className={`font-medium text-white group-hover:${themeConfig.primary} transition-colors flex items-center gap-1`}>
+                    {chat.name}
+                    {chat.isOfficial && <CheckCircle className="w-3 h-3 text-white fill-blue-500" />}
+                  </h3>
                   <span className="text-xs text-zinc-600">Now</span>
                 </div>
                 <p className="text-sm text-zinc-500 truncate group-hover:text-zinc-400 transition-colors">
@@ -775,9 +1165,12 @@ const ChatsScreen: FC<{
 };
 
 const ProfileScreen: FC<{ profile: UserProfile; onUpdateProfile: (p: UserProfile) => void; onLogout: () => void }> = ({ profile, onUpdateProfile, onLogout }) => {
+  const { t } = useTranslation();
   const [isEditing, setIsEditing] = useState(false);
   const [editedProfile, setEditedProfile] = useState(profile);
   const [showAbout, setShowAbout] = useState(false);
+  const [showSecurity, setShowSecurity] = useState(false);
+  const [showChangePassword, setShowChangePassword] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [storageError, setStorageError] = useState(false);
@@ -886,12 +1279,12 @@ const ProfileScreen: FC<{ profile: UserProfile; onUpdateProfile: (p: UserProfile
       className="h-full overflow-y-auto p-6"
     >
       <div className="flex justify-between items-center mb-8">
-        <h2 className="text-2xl font-light tracking-tight text-white">Profile</h2>
+        <h2 className="text-2xl font-light tracking-tight text-white">{t('profile')}</h2>
         <div className="flex gap-2">
           <button 
             onClick={() => setShowHelp(true)}
             className="p-2 bg-zinc-900 rounded-full hover:bg-zinc-800 transition-colors text-zinc-400 hover:text-white"
-            title="Help"
+            title={t('help')}
           >
             <HelpCircle className="w-5 h-5" />
           </button>
@@ -900,7 +1293,7 @@ const ProfileScreen: FC<{ profile: UserProfile; onUpdateProfile: (p: UserProfile
              <button 
               onClick={onLogout}
               className="p-2 bg-zinc-900 rounded-full hover:bg-red-900/30 transition-colors text-zinc-400 hover:text-red-400"
-              title="Logout"
+              title={t('logout')}
             >
               <X className="w-5 h-5" />
             </button>
@@ -1071,16 +1464,108 @@ const ProfileScreen: FC<{ profile: UserProfile; onUpdateProfile: (p: UserProfile
         )}
       </div>
 
-      <div className="mt-12 w-full max-w-sm mx-auto">
+      <div className="mt-12 w-full max-w-sm mx-auto space-y-4">
+        <button
+          onClick={() => setShowSecurity(true)}
+          className="w-full flex items-center justify-center gap-2 p-4 rounded-xl bg-zinc-900/30 hover:bg-zinc-900 border border-zinc-800/50 hover:border-zinc-800 transition-all text-zinc-500 hover:text-white group"
+        >
+          <Settings className="w-5 h-5 group-hover:text-emerald-400 transition-colors" />
+          <span>{t('security')}</span>
+        </button>
         <button
           onClick={() => setShowAbout(true)}
           className="w-full flex items-center justify-center gap-2 p-4 rounded-xl bg-zinc-900/30 hover:bg-zinc-900 border border-zinc-800/50 hover:border-zinc-800 transition-all text-zinc-500 hover:text-white group"
         >
           <Info className="w-5 h-5 group-hover:text-emerald-400 transition-colors" />
-          <span>About App</span>
+          <span>{t('about')}</span>
         </button>
       </div>
 
+      {/* Security Modal */}
+      <AnimatePresence>
+        {showSecurity && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-6"
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-zinc-900 border border-zinc-800 rounded-2xl p-8 max-w-sm w-full"
+            >
+              <h3 className="text-xl font-medium text-white mb-6">{showChangePassword ? t('changePassword') : t('security')}</h3>
+              <div className="space-y-4">
+                {showChangePassword ? (
+                  <div className="space-y-3">
+                    <input type="password" placeholder="Current Password" className="w-full p-3 bg-zinc-800 text-white rounded-xl" />
+                    <input type="password" placeholder="New Password" className="w-full p-3 bg-zinc-800 text-white rounded-xl" />
+                    <input type="password" placeholder="Confirm New Password" className="w-full p-3 bg-zinc-800 text-white rounded-xl" />
+                    <button 
+                      onClick={() => { alert('Password changed!'); setShowChangePassword(false); }}
+                      className="w-full py-3 mt-2 bg-emerald-600 text-white rounded-xl font-medium hover:bg-emerald-500 transition-colors"
+                    >
+                      {t('save')}
+                    </button>
+                    <button 
+                      onClick={() => setShowChangePassword(false)}
+                      className="w-full py-3 bg-zinc-800 text-white rounded-xl font-medium hover:bg-zinc-700 transition-colors"
+                    >
+                      {t('cancel')}
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span className="text-zinc-400">{t('twoFactor')}</span>
+                      <div className="w-10 h-6 bg-zinc-800 rounded-full p-1 cursor-pointer">
+                        <div className="w-4 h-4 bg-zinc-600 rounded-full" />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-zinc-400">{t('lastSeen')}</span>
+                      <div className="w-10 h-6 bg-emerald-600 rounded-full p-1 cursor-pointer flex justify-end">
+                        <div className="w-4 h-4 bg-white rounded-full" />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-zinc-400">{t('language')}</span>
+                      <div className="flex gap-2">
+                        <button 
+                          onClick={() => useAppStore.getState().setLanguage('en')}
+                          className={`px-3 py-1 rounded-lg text-sm ${useAppStore.getState().language === 'en' ? 'bg-emerald-600 text-white' : 'bg-zinc-800 text-zinc-400'}`}
+                        >
+                          EN
+                        </button>
+                        <button 
+                          onClick={() => useAppStore.getState().setLanguage('ru')}
+                          className={`px-3 py-1 rounded-lg text-sm ${useAppStore.getState().language === 'ru' ? 'bg-emerald-600 text-white' : 'bg-zinc-800 text-zinc-400'}`}
+                        >
+                          RU
+                        </button>
+                      </div>
+                    </div>
+                    <button 
+                      onClick={() => setShowChangePassword(true)}
+                      className="w-full py-3 mt-4 bg-zinc-800 text-white rounded-xl font-medium hover:bg-zinc-700 transition-colors"
+                    >
+                      {t('changePassword')}
+                    </button>
+                    <button 
+                      onClick={() => setShowSecurity(false)}
+                      className="w-full py-3 mt-6 bg-white text-black rounded-xl font-medium hover:bg-zinc-200 transition-colors"
+                    >
+                      {t('close')}
+                    </button>
+                  </>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
       {/* About App Modal */}
       <AnimatePresence>
         {showAbout && (
@@ -1105,12 +1590,20 @@ const ProfileScreen: FC<{ profile: UserProfile; onUpdateProfile: (p: UserProfile
                 <div>
                   <h3 className="text-xl font-medium text-white tracking-wide">Noir</h3>
                   <div className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-900/30 text-emerald-400 border border-emerald-900/50 mt-2">
-                    Version 1.0 Beta
+                    Version 1.1
                   </div>
                 </div>
                 <p className="text-zinc-400 text-sm leading-relaxed px-4">
-                  A minimal, secure, and fast chat application designed for simplicity and privacy.
+                  A minimal, secure, and fast chat application.
                 </p>
+                <div className="w-full text-left pt-4">
+                  <p className="text-zinc-300 text-sm font-medium mb-2">What's New:</p>
+                  <ul className="text-zinc-500 text-xs list-disc list-inside space-y-1">
+                    <li>Official News Bot</li>
+                    <li>Security Settings</li>
+                    <li>Language support</li>
+                  </ul>
+                </div>
                 <div className="pt-6 text-xs text-zinc-600 border-t border-zinc-800/50 w-full">
                   © 2026 Noir Inc.
                 </div>
@@ -1181,23 +1674,57 @@ export default function App() {
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const newChats: Chat[] = [];
+      
+      // Add News Bot
+      newChats.push({
+          id: 'news_bot',
+          name: 'Noir News',
+          username: 'noir_news',
+          avatar: null,
+          isBot: true,
+          isOfficial: true,
+          unread: 0,
+          lastMessage: 'Welcome to Noir Messenger 1.1!',
+          lastSeen: new Date(),
+          isOnline: true,
+          isGroup: false,
+      });
+
       snapshot.forEach((doc) => {
         const data = doc.data();
-        // Determine the "other" user
-        const otherUserId = data.participants.find((uid: string) => uid !== userProfile.uid);
-        const otherUserData = data.participantData?.[otherUserId];
-
-        if (otherUserData) {
+        
+        if (data.isGroup) {
           newChats.push({
             id: doc.id,
-            name: otherUserData.name,
-            username: otherUserData.username,
-            avatar: otherUserData.avatar,
+            name: data.name,
+            username: data.name, // Groups don't have usernames in the same way
+            avatar: data.avatar || '',
             lastMessage: data.lastMessage || 'No messages yet',
-            unread: 0, // TODO: Implement unread count logic
-            isOnline: false, // TODO: Implement presence
+            unread: 0,
+            isOnline: false,
             lastSeen: new Date(),
+            isGroup: true,
+            members: data.members,
+            description: data.description,
+            owner: data.owner
           });
+        } else {
+          // Determine the "other" user
+          const otherUserId = data.participants.find((uid: string) => uid !== userProfile.uid);
+          const otherUserData = data.participantData?.[otherUserId];
+
+          if (otherUserData) {
+            newChats.push({
+              id: doc.id,
+              name: otherUserData.name,
+              username: otherUserData.username,
+              avatar: otherUserData.avatar,
+              lastMessage: data.lastMessage || 'No messages yet',
+              unread: 0, 
+              isOnline: false, 
+              lastSeen: new Date(),
+            });
+          }
         }
       });
       // Sort locally by last message timestamp if available, or just fallback
@@ -1297,6 +1824,28 @@ export default function App() {
     }
   };
 
+  const handleCreateGroup = async (name: string, description: string, avatar: string | null) => {
+    if (!name.trim()) return;
+
+    try {
+      await addDoc(collection(db, "chats"), {
+        name,
+        description,
+        avatar,
+        isGroup: true,
+        participants: [userProfile.uid],
+        members: [userProfile.uid],
+        owner: userProfile.uid,
+        lastMessage: "",
+        lastMessageTimestamp: serverTimestamp(),
+        unread: 0
+      });
+      console.log("Group created");
+    } catch (e) {
+      console.error("Error creating group: ", e);
+    }
+  };
+
   if (dbError) {
     return (
       <div className="flex flex-col items-center justify-center h-screen bg-black text-white p-8 text-center space-y-6">
@@ -1366,6 +1915,7 @@ export default function App() {
               onBack={() => setSelectedChat(null)} 
               theme={currentTheme}
               currentUser={userProfile}
+              db={db}
             />
           ) : activeTab === 'chats' ? (
             <ChatsScreen 
@@ -1373,6 +1923,7 @@ export default function App() {
               chats={chats}
               onChatSelect={setSelectedChat} 
               onAddChat={handleAddChat}
+              onCreateGroup={handleCreateGroup}
               theme={currentTheme}
             />
           ) : (
