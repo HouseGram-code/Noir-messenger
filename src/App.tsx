@@ -777,11 +777,11 @@ const ChatDetailScreen: FC<{ chat: Chat; onBack: () => void; theme: Theme; curre
             <div className="mb-6 bg-zinc-800 p-4 rounded-xl flex items-center justify-between">
               <div>
                 <h4 className="text-zinc-400 text-xs uppercase tracking-wider mb-1">Invite Link</h4>
-                <p className="text-emerald-400 text-sm break-all">noir-messenger.vercel.app/join/{chat.id}</p>
+                <p className="text-emerald-400 text-sm break-all">{window.location.origin}?join={chat.id}</p>
               </div>
               <button 
                 onClick={() => {
-                  navigator.clipboard.writeText(`https://noir-messenger.vercel.app/join/${chat.id}`);
+                  navigator.clipboard.writeText(`${window.location.origin}?join=${chat.id}`);
                   alert("Link copied to clipboard!");
                 }}
                 className="text-zinc-400 hover:text-white transition-colors"
@@ -1662,6 +1662,51 @@ export default function App() {
 
     return () => unsubscribe();
   }, [setUserProfile]);
+
+  // Handle Join Link
+  useEffect(() => {
+    if (!userProfile?.uid) return;
+
+    const params = new URLSearchParams(window.location.search);
+    const joinChatId = params.get('join');
+
+    if (joinChatId) {
+      const joinGroup = async () => {
+        try {
+          const chatRef = doc(db, "chats", joinChatId);
+          const chatSnap = await getDoc(chatRef);
+
+          if (chatSnap.exists()) {
+            const chatData = chatSnap.data();
+            if (chatData.isGroup) {
+              // Check if already a member
+              if (!chatData.members?.includes(userProfile.uid)) {
+                await updateDoc(chatRef, {
+                  members: [...(chatData.members || []), userProfile.uid],
+                  participants: [...(chatData.participants || []), userProfile.uid]
+                });
+                alert(`Joined group: ${chatData.name}`);
+              } else {
+                 // Already a member, just open it
+                 // We rely on the chats listener to populate the list
+              }
+            } else {
+                 alert("This link is for a group chat.");
+            }
+          } else {
+            alert("Group not found or link expired.");
+          }
+        } catch (error) {
+          console.error("Error joining group:", error);
+          alert("Failed to join group.");
+        } finally {
+            // Clear URL param
+            window.history.replaceState({}, document.title, window.location.pathname);
+        }
+      };
+      joinGroup();
+    }
+  }, [userProfile]);
 
   // Listen for chats in Firestore
   useEffect(() => {
